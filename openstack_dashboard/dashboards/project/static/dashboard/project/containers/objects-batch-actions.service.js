@@ -23,6 +23,7 @@
              createFolderService)
     .factory('horizon.dashboard.project.containers.objects-batch-actions.delete', deleteService)
     .factory('horizon.dashboard.project.containers.objects-batch-actions.upload', uploadService)
+    .factory('horizon.dashboard.project.containers.objects-batch-actions.upload-large-object', uploadLargeObjectService)
     .run(registerActions);
 
   registerActions.$inject = [
@@ -30,7 +31,8 @@
     'horizon.dashboard.project.containers.object.resourceType',
     'horizon.dashboard.project.containers.objects-batch-actions.create-folder',
     'horizon.dashboard.project.containers.objects-batch-actions.delete',
-    'horizon.dashboard.project.containers.objects-batch-actions.upload'
+    'horizon.dashboard.project.containers.objects-batch-actions.upload',
+    'horizon.dashboard.project.containers.objects-batch-actions.upload-large-object'
   ];
 
   /**
@@ -42,12 +44,17 @@
     objectResCode,
     createFolderService,
     deleteService,
-    uploadService
+    uploadService,
+    uploadLargeObjectService
   ) {
     registryService.getResourceType(objectResCode).batchActions
     .append({
       service: uploadService,
       template: {text: '<span class="fa fa-upload"></span>'}
+    })
+    .append({
+      service: uploadLargeObjectService,
+      template: {text: '<span class="fa fa-upload"></span>&nbsp;' + gettext('Large Upload')}
     })
     .append({
       service: createFolderService,
@@ -112,6 +119,64 @@
       }, function error() {
         modalWaitSpinnerService.hideModalSpinner();
       });
+    }
+  }
+
+  uploadLargeObjectService.$inject = [
+    'horizon.app.core.openstack-service-api.swift',
+    'horizon.dashboard.project.containers.basePath',
+    'horizon.dashboard.project.containers.containers-model',
+    'horizon.framework.util.q.extensions',
+    'horizon.framework.widgets.modal-wait-spinner.service',
+    'horizon.framework.widgets.toast.service',
+    '$uibModal'
+  ];
+
+  function uploadLargeObjectService(swiftAPI, basePath, model, $qExtensions, modalWaitSpinnerService,
+                         toastService, $uibModal) {
+    var service = {
+      allowed: function allowed() {
+        return $qExtensions.booleanAsPromise(true);
+      },
+      perform: function perform() {
+        uploadModal(basePath + 'upload-object-modal.html', $uibModal)
+          .then(service.uploadLargeObjectCallback);
+      },
+      uploadLargeObjectCallback: uploadLargeObjectCallback
+    };
+    return service;
+
+    function uploadLargeObjectCallback(uploadInfo) {
+      modalWaitSpinnerService.showModalSpinner(gettext("Uploading large file"));
+      swiftAPI.uploadSlo(
+        model.container.name,
+        model.fullPath(uploadInfo.name),
+        uploadInfo.upload_file
+      ).then(success, error);
+
+      function success() {
+        swiftAPI.createUploadManifest(
+          model.container.name,
+          model.fullPath(uploadInfo.name),
+          uploadInfo.upload_file
+        ).then(successManifest);
+        function successManifest() {
+          modalWaitSpinnerService.hideModalSpinner();
+          toastService.add(
+            'success',
+            interpolate(gettext('File %(name)s uploaded.'), uploadInfo, true)
+          );
+          model.updateContainer();
+          model.selectContainer(
+            model.container.name,
+            model.folder
+          );
+        }
+      }
+      function error() {
+        console.log("Large Upload Service: ERROR");
+        modalWaitSpinnerService.hideModalSpinner();
+      }
     }
   }
 

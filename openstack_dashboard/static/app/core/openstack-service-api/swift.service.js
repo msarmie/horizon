@@ -49,7 +49,11 @@
       getObjectURL: getObjectURL,
       getPolicyDetails: getPolicyDetails,
       setContainerAccess: setContainerAccess,
-      uploadObject: uploadObject
+      uploadObject: uploadObject,
+      pad: pad,
+      createUploadManifest: createUploadManifest,
+      uploadSlo: uploadSlo,
+      getNextSegmentNumberDirect: getNextSegmentNumberDirect
     };
 
     return service;
@@ -71,6 +75,7 @@
     function getObjectURL(container, object, type) {
       var urlType = type || 'object';
       var objectUrl = encodeURIComponent(object).replace(/%2F/g, '/');
+      console.log(">>>> object url >>>>> " + objectUrl);
       return getContainerURL(container) + '/' + urlType + '/' + objectUrl;
     }
 
@@ -350,6 +355,119 @@
             toastService.add('error', gettext('Unable to copy the object.'));
           }
         });
+    }
+
+    function uploadSlo(container, objectName, file) {
+      var segmentContainer = container + "_segments";
+      var segmentPseudoFolderName = objectName + "_segments";
+
+      return service.getNextSegmentNumberDirect(segmentContainer, segmentPseudoFolderName)
+      .then(
+        function(result) {
+          console.log("getNextSegmentNumberDirect: " +result);
+          return result;
+        }
+      )
+      .then(
+        async function(result) {
+          console.log("prep segments: " +result);
+          var segmentNumber = result;
+          var segmentSize = getSegmentSize(file.size);
+          var segmentStart = (segmentNumber - 1) * segmentSize;
+          var segmentEnd = segmentNumber * segmentSize;
+          var done = segmentNumber - 1;
+          var segment;
+          var totalSegments = parseInt(Math.ceil(file.size/segmentSize));
+          console.log("totalSegments: "+totalSegments);
+          console.log("file.size: " +file.size);
+
+          for (var i = done; i <= totalSegments; i++) {
+            if (segmentStart < file.size) {
+              segment = file.slice(segmentStart, segmentEnd);
+              var padded = service.pad(segmentNumber, 4);
+
+              await apiService.post(
+                service.getObjectURL(segmentContainer, segmentPseudoFolderName + "/" + padded),
+                {file: segment}
+              );
+
+            }
+            segmentNumber++;
+            segmentStart = (segmentNumber -1) * segmentSize;
+            segmentEnd = segmentNumber * segmentSize;
+          }
+        }
+      );
+    }
+
+    function createUploadManifest(container, objectName, file) {
+      var objectUrlSlo = service.getContainerURL(container) + '/object/slo/' + objectName;
+      return apiService.post(
+        objectUrlSlo,
+        {file: file}
+      );
+    }
+
+    function getNextSegmentNumberDirect(container, folderName) {
+      var data = {is_public: false, storage_policy: {}};
+      return apiService.get(service.getContainerURL(container) + '/metadata/')
+      .then(
+        function(success) {
+          console.log("Creating container...")
+      }, function error() {
+        apiService.post(service.getContainerURL(container) + '/metadata/', data)
+        .error(function (response) {
+          if (response.status === 409) {
+            toastService.add('error', response);
+          } else {
+            toastService.add('error', gettext('Unable to create the segment container.'));
+          }
+        })
+      }).then(function success() {
+        apiService.post(
+          service.getObjectURL(container, folderName) + '/',
+          {}
+        )
+          .error(function (response, status) {
+            if (status === 409) {
+              toastService.add('error', response);
+            } else {
+              toastService.add('error', gettext('Unable to create the segment folder.'));
+            }
+          });
+      }).then(function success() {
+        var params = {"path": folderName};
+        return service.getObjects(container, params)
+        .then(
+          function(result) {
+            console.log("get objects");
+            console.log(result);
+            return result.data.items;
+          }
+        ).then(
+          function(result) {
+            console.log("chained");
+            console.log(result);
+            if(result.length < 1) {
+              return 1;
+            }
+          }
+        )
+      });
+    }
+
+    function getSegmentSize(size) {
+      if (size <= 1048576000) {
+        return 1048576;
+      }
+
+      var minSegmentSize = parseInt(Math.ceil(size/1000));
+      return minSegmentSize;
+    }
+
+    function pad(num, size) {
+      var s = "000000000" + num;
+      return s.substr(s.length-size);
     }
   }
 }());

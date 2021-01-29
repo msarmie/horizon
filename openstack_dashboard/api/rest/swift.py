@@ -174,6 +174,47 @@ class UploadObjectForm(forms.Form):
 
 
 @urls.register
+class ObjectSlo(generic.View):
+    """API for a single swift object or pseudo-folder"""
+    url_regex = r'swift/containers/(?P<container>[^/]+)/object/slo/' \
+        '(?P<object_name>.+)$'
+
+    @csrf_exempt
+    def post(self, request, container, object_name):
+        """Create or replace an object or pseudo-folder
+
+        :param request:
+        :param container:
+        :param object_name:
+
+        If the object_name (ie. POST path) ends in a '/' then a folder is
+        created, rather than an object. Any file content passed along with
+        the request will be ignored in that case.
+
+        POST parameter:
+
+        :param file: the file data for the upload.
+
+        :return:
+        """
+        form = UploadObjectForm(request.POST, request.FILES)
+        if not form.is_valid():
+            raise rest_utils.AjaxError(500, 'Invalid request')
+
+        data = form.clean()
+
+        result = api.swift.swift_upload_object_slo(
+            request,
+            container,
+            object_name,
+            data['file']
+        )
+
+        return rest_utils.CreatedResponse(
+            u'/api/swift/containers/%s/object/%s' % (container, result.name)
+        )
+
+@urls.register
 class Object(generic.View):
     """API for a single swift object or pseudo-folder"""
     url_regex = r'swift/containers/(?P<container>[^/]+)/object/' \

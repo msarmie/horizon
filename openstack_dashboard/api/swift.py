@@ -30,6 +30,9 @@ from horizon import exceptions
 
 from openstack_dashboard.api import base
 from openstack_dashboard.contrib.developer.profiler import api as profiler
+from tempfile import NamedTemporaryFile
+import json
+import io
 
 FOLDER_DELIMITER = "/"
 CHUNK_SIZE = settings.SWIFT_FILE_TRANSFER_CHUNK_SIZE
@@ -349,6 +352,48 @@ def swift_upload_object(request, container_name, object_name,
     obj_info = {'name': object_name, 'bytes': size, 'etag': etag}
     return StorageObject(obj_info, container_name)
 
+@profiler.trace
+@safe_swift_exception
+def swift_upload_object_slo(request, container_name, object_name,
+                        object_file=None):
+    headers = {}
+    size = 0
+
+    kwargs = dict(prefix=object_name+"_segments/",
+                delimiter=FOLDER_DELIMITER,
+                full_listing=True)
+    headers, objects = swift_api(request).get_container(container_name + "_segments", **kwargs)
+
+    manifest = []
+    for object in objects:
+        if object['content_type'] != 'application/directory':
+            manifest.append({
+                    "path": container_name + "_segments/" + object["name"],
+                    "etag": object["hash"],
+                    "size_bytes": object["bytes"],
+                })
+
+    manifest = sorted(manifest, key=lambda k: k['path'])
+
+    with NamedTemporaryFile(mode='wb+') as fp:
+        fp.write(bytes(json.dumps(manifest), encoding = 'ascii'))
+        size = fp.tell()
+        fp.seek(0)
+        obj_info = {'name': object_name, 'bytes': size, 'etag': ''}
+        try:
+            headers['X-Object-Meta-Orig-Filename'] = object_name
+            etag = swift_api(request).put_object(container_name,
+                                                object_name,
+                                                fp,
+                                                content_length=size,
+                                                headers=headers,
+                                                query_string='multipart-manifest=put')
+
+            obj_info = {'name': object_name, 'bytes': size, 'etag': etag}
+        except swiftclient.exceptions.ClientException as e:
+            raise e
+    return StorageObject(obj_info, container_name)
+
 
 @profiler.trace
 @safe_swift_exception
@@ -361,6 +406,7 @@ def swift_create_pseudo_folder(request, container_name, pseudo_folder_name):
     etag = swift_api(request).put_object(container_name,
                                          pseudo_folder_name,
                                          None,
+                                         content_type='application/directory',
                                          headers=headers)
     obj_info = {
         'name': pseudo_folder_name,
